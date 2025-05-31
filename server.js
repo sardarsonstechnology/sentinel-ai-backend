@@ -9,87 +9,74 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// MongoDB model
-const Signal = mongoose.model('Signal', new mongoose.Schema({
-  asset: String,
-  rsi: Number,
-  signal: String,
-  generated_at: Date,
-}));
+// ✅ Define MongoDB Schema & Model
+const SignalSchema = new mongoose.Schema({
+  asset: { type: String, required: true },
+  rsi: { type: Number, required: true },
+  signal: { type: String, required: true },
+  generated_at: { type: Date, default: Date.now },
+});
 
-// MongoDB connection
+const Signal = mongoose.model('Signal', SignalSchema);
+
+// ✅ MongoDB Connection
 mongoose.connect(process.env.MONGO_URI, {
   useNewUrlParser: true,
   useUnifiedTopology: true,
 })
-.then(() => {
-  console.log('✅ MongoDB connected');
-})
-.catch(err => {
-  console.error('❌ MongoDB connection error:', err);
+.then(() => console.log('✅ MongoDB connected successfully'))
+.catch((err) => {
+  console.error('❌ MongoDB connection failed:', err.message);
+  process.exit(1); // Exit if DB connection fails
 });
 
-// GET /api/assets — list unique asset symbols
+// ✅ GET: All Unique Asset Symbols
 app.get('/api/assets', async (req, res) => {
   try {
     const assets = await Signal.distinct('asset');
     res.json(assets);
   } catch (err) {
-    console.error('❌ Error fetching assets:', err.message);
-    res.status(500).json({ error: 'Failed to fetch assets' });
+    console.error('❌ Error fetching asset list:', err.message);
+    res.status(500).json({ error: 'Failed to fetch asset list' });
   }
 });
 
-// GET /api/signals?symbol=AAPL
+// ✅ GET: Latest Signal for Given Symbol with Real-Time Change %
 app.get('/api/signals', async (req, res) => {
   const symbol = req.query.symbol?.toUpperCase();
   const apiKey = process.env.FINNHUB_API_KEY;
 
   if (!symbol) return res.status(400).json({ error: 'Missing symbol parameter' });
-  if (!apiKey) return res.status(500).json({ error: 'API key not configured on server' });
+  if (!apiKey) return res.status(500).json({ error: 'Server misconfigured: API key missing' });
 
   try {
-    // Get real-time price data from Finnhub
-    const quoteUrl = `https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${apiKey}`;
-    const { data } = await axios.get(quoteUrl);
+    const signal = await Signal.findOne({ asset: symbol }).sort({ generated_at: -1 });
+    if (!signal) return res.status(404).json({ error: `No signal found for ${symbol}` });
 
-    const close = parseFloat(data.c);
-    const high = parseFloat(data.h);
-    const low = parseFloat(data.l);
+    const { data } = await axios.get(`https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${apiKey}`);
 
-    if (isNaN(close) || isNaN(high) || isNaN(low)) {
-      return res.status(500).json({ error: 'Invalid data from Finnhub' });
-    }
+    const current = parseFloat(data.c);
+    const previous = parseFloat(data.pc);
 
-    // Calculate a simple RSI approximation
-    const rsi = Math.min(100, Math.max(0, ((close - low) / (high - low)) * 100));
-
-    let signal = 'hold';
-    if (rsi > 70) signal = 'sell';
-    else if (rsi < 30) signal = 'buy';
-
-    // Save to DB
-    const newSignal = new Signal({
-      asset: symbol,
-      rsi: Number(rsi.toFixed(2)),
-      signal,
-      generated_at: new Date(),
-    });
-    await newSignal.save();
+    const change =
+      !isNaN(current) && !isNaN(previous) && previous !== 0
+        ? Number((((current - previous) / previous) * 100).toFixed(2))
+        : null;
 
     res.json({
-      asset: symbol,
-      rsi: newSignal.rsi,
-      signal: newSignal.signal,
-      generated_at: newSignal.generated_at,
+      asset: signal.asset,
+      rsi: signal.rsi,
+      signal: signal.signal,
+      change,
+      generated_at: signal.generated_at,
     });
 
   } catch (err) {
-    console.error('❌ Error in /api/signals:', err.message);
+    console.error('❌ Error fetching signal:', err.message);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-// Server listener
+// ✅ Start Server
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Server live at http://localhost:${PORT}`));
