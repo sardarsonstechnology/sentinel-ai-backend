@@ -3,80 +3,85 @@ const mongoose = require('mongoose');
 const dotenv = require('dotenv');
 const cors = require('cors');
 const axios = require('axios');
+const calculateSignal = require('./utils/calculateSignal');
 
 dotenv.config();
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ✅ Define MongoDB Schema & Model
-const SignalSchema = new mongoose.Schema({
-  asset: { type: String, required: true },
-  rsi: { type: Number, required: true },
-  signal: { type: String, required: true },
-  generated_at: { type: Date, default: Date.now },
-});
+// MongoDB model
+const Signal = mongoose.model('Signal', new mongoose.Schema({
+  asset: String,
+  rsi: Number,
+  signal: String,
+  generated_at: Date,
+}));
 
-const Signal = mongoose.model('Signal', SignalSchema);
-
-// ✅ MongoDB Connection
+// MongoDB connection
 mongoose.connect(process.env.MONGO_URI, {
   useNewUrlParser: true,
   useUnifiedTopology: true,
-})
-.then(() => console.log('✅ MongoDB connected successfully'))
-.catch((err) => {
-  console.error('❌ MongoDB connection failed:', err.message);
-  process.exit(1); // Exit if DB connection fails
-});
+}).then(() => console.log('✅ MongoDB connected'))
+  .catch(err => console.error('❌ MongoDB connection error:', err));
 
-// ✅ GET: All Unique Asset Symbols
+// GET /api/assets — List distinct assets
 app.get('/api/assets', async (req, res) => {
   try {
     const assets = await Signal.distinct('asset');
     res.json(assets);
   } catch (err) {
-    console.error('❌ Error fetching asset list:', err.message);
-    res.status(500).json({ error: 'Failed to fetch asset list' });
+    res.status(500).json({ error: 'Failed to fetch assets' });
   }
 });
 
-// ✅ GET: Latest Signal for Given Symbol with Real-Time Change %
+// GET /api/signals?symbol=AAPL — Get latest signal or generate if missing
 app.get('/api/signals', async (req, res) => {
   const symbol = req.query.symbol?.toUpperCase();
   const apiKey = process.env.FINNHUB_API_KEY;
 
   if (!symbol) return res.status(400).json({ error: 'Missing symbol parameter' });
-  if (!apiKey) return res.status(500).json({ error: 'Server misconfigured: API key missing' });
+  if (!apiKey) return res.status(500).json({ error: 'Missing API key on server' });
 
   try {
-    const signal = await Signal.findOne({ asset: symbol }).sort({ generated_at: -1 });
-    if (!signal) return res.status(404).json({ error: `No signal found for ${symbol}` });
+    let signal = await Signal.findOne({ asset: symbol }).sort({ generated_at: -1 });
 
-    const { data } = await axios.get(`https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${apiKey}`);
+    if (!signal || Date.now() - signal.generated_at > 24 * 60 * 60 * 1000) {
+      const candlesUrl = `https://finnhub.io/api/v1/indicator?symbol=${symbol}&resolution=D&indicator=rsi&timeperiod=14&token=${apiKey}`;
+      const response = await axios.get(candlesUrl);
+      const rsiValues = response.data.rsi;
 
-    const current = parseFloat(data.c);
-    const previous = parseFloat(data.pc);
+      if (!rsiValues || rsiValues.length === 0) {
+        return res.status(404).json({ error: 'RSI data not available' });
+      }
 
-    const change =
-      !isNaN(current) && !isNaN(previous) && previous !== 0
-        ? Number((((current - previous) / previous) * 100).toFixed(2))
-        : null;
+      const latestRSI = parseFloat(rsiValues[rsiValues.length - 1]);
+      const signalValue = calculateSignal(latestRSI);
+
+      signal = new Signal({
+        asset: symbol,
+        rsi: latestRSI,
+        signal: signalValue,
+        generated_at: new Date()
+      });
+
+      await signal.save();
+      console.log(`📊 Generated & saved new signal for ${symbol}`);
+    }
 
     res.json({
       asset: signal.asset,
       rsi: signal.rsi,
       signal: signal.signal,
-      change,
       generated_at: signal.generated_at,
     });
 
   } catch (err) {
-    console.error('❌ Error fetching signal:', err.message);
+    console.error(`❌ Error generating signal for ${symbol}:`, err.message);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-// ✅ Start Server
+// Server port
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Server live at http://localhost:${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Server live on port ${PORT}`));

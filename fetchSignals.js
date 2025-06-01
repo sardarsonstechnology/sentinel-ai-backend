@@ -1,56 +1,60 @@
-const axios = require("axios");
-const mongoose = require("mongoose");
-require("dotenv").config();
-const Signal = require("./models/Signal");
+const axios = require('axios');
+const mongoose = require('mongoose');
+const dotenv = require('dotenv');
+const calculateSignal = require('./utils/calculateSignal');
 
-const symbols = ["AAPL", "TSLA", "BTC/USD", "ETH/USD"]; // Add more as needed
+dotenv.config();
 
-const fetchRSI = async (symbol) => {
+const MONGO_URI = process.env.MONGO_URI;
+const TWELVE_DATA_API_KEY = process.env.TWELVE_DATA_API_KEY;
+
+const Signal = mongoose.model('Signal', new mongoose.Schema({
+  asset: String,
+  rsi: Number,
+  signal: String,
+  generated_at: Date,
+}));
+
+const majorSymbols = ['AAPL', 'AMZN', 'TSLA', 'MSFT', 'GOOGL'];
+
+async function fetchRSI(symbol) {
   try {
-    const url = `https://api.twelvedata.com/rsi?symbol=${symbol}&interval=1min&time_period=14&apikey=${process.env.TWELVE_DATA_API_KEY}`;
+    const url = `https://api.twelvedata.com/rsi?symbol=${symbol}&interval=1day&time_period=14&apikey=${TWELVE_DATA_API_KEY}`;
     const response = await axios.get(url);
-    const rsi = parseFloat(response.data.values?.[0]?.rsi);
 
-    if (isNaN(rsi)) {
-      console.error(`❌ Not enough data to calculate RSI for ${symbol}`);
+    const rsiValue = response.data?.values?.[0]?.rsi;
+    if (!rsiValue) {
+      console.error(`❌ No RSI found in response for ${symbol}`);
       return null;
     }
 
-    return rsi;
-  } catch (error) {
-    console.error(`❌ Error fetching RSI for ${symbol}:`, error.message);
+    return parseFloat(rsiValue);
+  } catch (err) {
+    console.error(`❌ Error fetching RSI for ${symbol}:`, err.message);
     return null;
   }
-};
+}
 
-const determineSignal = (rsi) => {
-  if (rsi > 70) return "SELL";
-  if (rsi < 30) return "BUY";
-  return "HOLD";
-};
+async function updateSignals() {
+  await mongoose.connect(MONGO_URI);
+  console.log('✅ Connected to MongoDB');
 
-const fetchAndStoreSignals = async () => {
-  console.log("🔁 Fetching RSI signals from Twelve Data...");
-
-  for (const symbol of symbols) {
+  for (const symbol of majorSymbols) {
     const rsi = await fetchRSI(symbol);
     if (rsi === null) continue;
 
-    const action = determineSignal(rsi);
+    const signal = calculateSignal(rsi);
+    await Signal.findOneAndUpdate(
+      { asset: symbol },
+      { rsi, signal, generated_at: new Date() },
+      { upsert: true }
+    );
 
-    try {
-      await Signal.create({
-        asset: symbol,
-        confidence: rsi,
-        action: action
-      });
-      console.log(`✅ Saved signal for ${symbol}: RSI = ${rsi.toFixed(2)} | Signal: ${action}`);
-    } catch (error) {
-      console.error(`❌ Failed to save signal for ${symbol}:`, error.message);
-    }
+    console.log(`✅ Signal updated for ${symbol}: RSI=${rsi}, Signal=${signal}`);
   }
 
-  console.log("✅ Signal generation complete.");
-};
+  await mongoose.disconnect();
+  console.log('🔌 Disconnected from MongoDB');
+}
 
-module.exports = fetchAndStoreSignals;
+updateSignals();
