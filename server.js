@@ -18,12 +18,13 @@ const Signal = mongoose.model('Signal', new mongoose.Schema({
   generated_at: Date,
 }));
 
-// MongoDB connection
+// Connect to MongoDB
 mongoose.connect(process.env.MONGO_URI, {
   useNewUrlParser: true,
   useUnifiedTopology: true,
-}).then(() => console.log('✅ MongoDB connected'))
-  .catch(err => console.error('❌ MongoDB connection error:', err));
+})
+.then(() => console.log('✅ MongoDB connected'))
+.catch(err => console.error('❌ MongoDB connection error:', err));
 
 // GET /api/assets — List distinct assets
 app.get('/api/assets', async (req, res) => {
@@ -35,10 +36,10 @@ app.get('/api/assets', async (req, res) => {
   }
 });
 
-// GET /api/signals?symbol=AAPL — Get latest signal or generate if missing
+// GET /api/signals?symbol=AAPL — Fetch or generate RSI signal
 app.get('/api/signals', async (req, res) => {
   const symbol = req.query.symbol?.toUpperCase();
-  const apiKey = process.env.FINNHUB_API_KEY;
+  const apiKey = process.env.TWELVE_DATA_API_KEY;
 
   if (!symbol) return res.status(400).json({ error: 'Missing symbol parameter' });
   if (!apiKey) return res.status(500).json({ error: 'Missing API key on server' });
@@ -46,27 +47,30 @@ app.get('/api/signals', async (req, res) => {
   try {
     let signal = await Signal.findOne({ asset: symbol }).sort({ generated_at: -1 });
 
-    if (!signal || Date.now() - signal.generated_at > 24 * 60 * 60 * 1000) {
-      const candlesUrl = `https://finnhub.io/api/v1/indicator?symbol=${symbol}&resolution=D&indicator=rsi&timeperiod=14&token=${apiKey}`;
-      const response = await axios.get(candlesUrl);
-      const rsiValues = response.data.rsi;
+    const now = Date.now();
+    const isStale = signal && now - new Date(signal.generated_at).getTime() > 24 * 60 * 60 * 1000;
 
-      if (!rsiValues || rsiValues.length === 0) {
+    if (!signal || isStale) {
+      const candlesUrl = `https://api.twelvedata.com/rsi?symbol=${symbol}&interval=1day&time_period=14&apikey=${apiKey}`;
+      const response = await axios.get(candlesUrl);
+
+      const rsiStr = response.data?.values?.[0]?.rsi;
+      const rsi = rsiStr ? parseFloat(rsiStr) : null;
+
+      if (!rsi || isNaN(rsi)) {
         return res.status(404).json({ error: 'RSI data not available' });
       }
 
-      const latestRSI = parseFloat(rsiValues[rsiValues.length - 1]);
-      const signalValue = calculateSignal(latestRSI);
-
+      const signalValue = calculateSignal(rsi);
       signal = new Signal({
         asset: symbol,
-        rsi: latestRSI,
+        rsi,
         signal: signalValue,
         generated_at: new Date()
       });
 
       await signal.save();
-      console.log(`📊 Generated & saved new signal for ${symbol}`);
+      console.log(`📊 Signal updated for ${symbol}: RSI=${rsi}, Signal=${signalValue}`);
     }
 
     res.json({
@@ -82,6 +86,6 @@ app.get('/api/signals', async (req, res) => {
   }
 });
 
-// Server port
+// Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Server live on port ${PORT}`));
