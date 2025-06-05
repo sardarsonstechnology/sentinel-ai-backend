@@ -8,6 +8,7 @@ dotenv.config();
 const MONGO_URI = process.env.MONGO_URI;
 const TWELVE_DATA_API_KEY = process.env.TWELVE_DATA_API_KEY;
 
+// Mongoose Signal model
 const Signal = mongoose.model('Signal', new mongoose.Schema({
   asset: String,
   rsi: Number,
@@ -15,11 +16,16 @@ const Signal = mongoose.model('Signal', new mongoose.Schema({
   generated_at: Date,
 }));
 
-const majorSymbols = ['AAPL', 'AMZN', 'TSLA', 'MSFT', 'GOOGL'];
+// Supported stock + crypto assets
+const majorSymbols = [
+  'AAPL', 'AMZN', 'TSLA', 'MSFT', 'GOOGL',
+  'BTC/USD', 'ETH/USD'
+];
 
 async function fetchRSI(symbol) {
   try {
-    const url = `https://api.twelvedata.com/rsi?symbol=${symbol}&interval=1day&time_period=14&apikey=${TWELVE_DATA_API_KEY}`;
+    const encodedSymbol = encodeURIComponent(symbol); // handles slashes in crypto
+    const url = `https://api.twelvedata.com/rsi?symbol=${encodedSymbol}&interval=1day&time_period=14&apikey=${TWELVE_DATA_API_KEY}`;
     const response = await axios.get(url);
 
     const rsiValue = response.data?.values?.[0]?.rsi;
@@ -39,14 +45,24 @@ async function updateSignals() {
   await mongoose.connect(MONGO_URI);
   console.log('✅ Connected to MongoDB');
 
+  // ✅ Permanently remove the fake 'ALL' signal
+  await Signal.deleteMany({ asset: "ALL" });
+
   for (const symbol of majorSymbols) {
+    console.log(`⏳ Fetching RSI for: ${symbol}`);
     const rsi = await fetchRSI(symbol);
     if (rsi === null) continue;
 
     const signal = calculateSignal(rsi);
+
     await Signal.findOneAndUpdate(
-      { asset: symbol },
-      { rsi, signal, generated_at: new Date() },
+      { asset: symbol.toUpperCase() },
+      {
+        asset: symbol.toUpperCase(),
+        rsi,
+        signal,
+        generated_at: new Date(),
+      },
       { upsert: true }
     );
 
