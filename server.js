@@ -45,6 +45,38 @@ app.get('/api/assets', async (req, res) => {
   }
 });
 
+// ✅ GET /api/signals/all — Return latest signal per asset
+app.get('/api/signals/all', async (req, res) => {
+  try {
+    const latestSignals = await Signal.aggregate([
+      { $sort: { generated_at: -1 } },
+      {
+        $group: {
+          _id: '$asset',
+          asset: { $first: '$asset' },
+          rsi: { $first: '$rsi' },
+          signal: { $first: '$signal' },
+          generated_at: { $first: '$generated_at' },
+        },
+      },
+      {
+        $project: {
+          _id: 0,
+          asset: 1,
+          rsi: 1,
+          signal: 1,
+          generated_at: 1,
+        },
+      },
+    ]);
+
+    res.json(latestSignals);
+  } catch (err) {
+    console.error('❌ Failed to fetch all signals:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // GET /api/signals/:symbol — Fetch or generate RSI signal
 app.get('/api/signals/:symbol', async (req, res) => {
   const symbol = req.params.symbol?.toUpperCase();
@@ -92,38 +124,6 @@ app.get('/api/signals/:symbol', async (req, res) => {
 
   } catch (err) {
     console.error(`❌ Error for ${symbol}:`, err.message);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// ✅ NEW: GET /api/signals/all — Return latest signal per asset
-app.get('/api/signals/all', async (req, res) => {
-  try {
-    const latestSignals = await Signal.aggregate([
-      { $sort: { generated_at: -1 } },
-      {
-        $group: {
-          _id: '$asset',
-          asset: { $first: '$asset' },
-          rsi: { $first: '$rsi' },
-          signal: { $first: '$signal' },
-          generated_at: { $first: '$generated_at' },
-        },
-      },
-      {
-        $project: {
-          _id: 0,
-          asset: 1,
-          rsi: 1,
-          signal: 1,
-          generated_at: 1,
-        },
-      },
-    ]);
-
-    res.json(latestSignals);
-  } catch (err) {
-    console.error('❌ Failed to fetch all signals:', err.message);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
