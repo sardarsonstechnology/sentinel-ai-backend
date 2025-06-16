@@ -3,38 +3,45 @@ const mongoose = require('mongoose');
 const dotenv = require('dotenv');
 const cors = require('cors');
 const axios = require('axios');
+const cron = require('node-cron');
 const calculateSignal = require('./utils/calculateSignal');
+const updateAllSignals = require('./utils/updateAllSignals');
+
+const Signal = require('./models/Signal');
+const SignalHistory = require('./models/SignalHistory');
 
 dotenv.config();
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Root route (health check)
+// ✅ Root route
 app.get('/', (req, res) => {
   res.send('✅ Sentinel AI Backend is live');
 });
 
-// MongoDB Signal model
-const Signal = mongoose.model('Signal', new mongoose.Schema({
-  asset: String,
-  rsi: Number,
-  signal: String,
-  generated_at: Date,
-}));
-
-// Connect to MongoDB
+// ✅ Connect to MongoDB
 mongoose.connect(process.env.MONGO_URI, {
   useNewUrlParser: true,
   useUnifiedTopology: true,
 })
-.then(() => console.log('✅ MongoDB connected'))
+.then(() => {
+  console.log('✅ MongoDB connected');
+
+  // 🔁 Auto-update signals every 15 min
+  cron.schedule('*/15 * * * *', async () => {
+    await updateAllSignals();
+  });
+
+  // Run once on startup
+  updateAllSignals();
+})
 .catch(err => {
   console.error('❌ MongoDB connection error:', err.message);
   process.exit(1);
 });
 
-// GET /api/assets — List all distinct assets
+// ✅ GET /api/assets — List all distinct assets
 app.get('/api/assets', async (req, res) => {
   try {
     const assets = await Signal.distinct('asset');
@@ -77,7 +84,7 @@ app.get('/api/signals/all', async (req, res) => {
   }
 });
 
-// GET /api/signals/:symbol — Fetch or generate RSI signal
+// ✅ GET /api/signals/:symbol — Fetch or generate RSI signal
 app.get('/api/signals/:symbol', async (req, res) => {
   const symbol = req.params.symbol?.toUpperCase();
   const apiKey = process.env.TWELVE_DATA_API_KEY;
@@ -92,7 +99,11 @@ app.get('/api/signals/:symbol', async (req, res) => {
     const isStale = signal && now - new Date(signal.generated_at).getTime() > 24 * 60 * 60 * 1000;
 
     if (!signal || isStale) {
-      const url = `https://api.twelvedata.com/rsi?symbol=${symbol}&interval=1day&time_period=14&apikey=${apiKey}`;
+      const formattedSymbol = symbol.includes('USD') && !symbol.includes('/')
+        ? `${symbol.slice(0, 3)}/${symbol.slice(3)}`
+        : symbol;
+
+      const url = `https://api.twelvedata.com/rsi?symbol=${formattedSymbol}&interval=1day&time_period=14&apikey=${apiKey}`;
       const response = await axios.get(url);
 
       const rsiStr = response.data?.values?.[0]?.rsi;
@@ -128,8 +139,27 @@ app.get('/api/signals/:symbol', async (req, res) => {
   }
 });
 
-// Start server
+// ✅ NEW: GET /api/signals/history/:symbol — Historical RSI data
+app.get('/api/signals/history/:symbol', async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const history = await SignalHistory.find({ asset: symbol }).sort({ generated_at: 1 });
+
+    res.json(history);
+  } catch (err) {
+    console.error(`❌ Failed to fetch RSI history for ${req.params.symbol}:`, err.message);
+    res.status(500).json({ error: 'Failed to fetch RSI history' });
+  }
+});
+
+// ✅ Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Backend live on port ${PORT}`);
+});
+
+// Optional cron for debug
+cron.schedule('* * * * *', async () => {
+  console.log('🕒 Running signal auto-update...');
+  await updateAllSignals();
 });
