@@ -5,23 +5,25 @@ const calculateSignal = require('./calculateSignal');
 
 const apiKey = process.env.TWELVE_DATA_API_KEY;
 
-// List all assets you want to update
-const assetList = ['AAPL', 'TSLA', 'AMZN', 'GOOGL', 'MSFT', 'BTCUSD', 'ETHUSD'];
+// Assets to track (add more as needed)
+const assetList = ['AAPL', 'TSLA', 'AMZN', 'GOOGL', 'MSFT', 'BTC/USD', 'ETH/USD'];
 
+// Format symbols for Twelve Data API
 function formatSymbol(symbol) {
   return symbol.includes('USD') && !symbol.includes('/')
     ? `${symbol.slice(0, 3)}/${symbol.slice(3)}`
     : symbol;
 }
 
+// Main signal updater
 const updateAllSignals = async () => {
   console.log('🔁 Auto-updating signals...');
-
   for (const symbol of assetList) {
     try {
       const formatted = formatSymbol(symbol);
-      const url = `https://api.twelvedata.com/rsi?symbol=${formatted}&interval=1day&time_period=14&apikey=${apiKey}`;
+      const url = `https://api.twelvedata.com/rsi?symbol=${formatted}&interval=1min&time_period=14&apikey=${apiKey}`;
       const response = await axios.get(url);
+
       const rsiStr = response.data?.values?.[0]?.rsi;
       const rsi = rsiStr ? parseFloat(rsiStr) : null;
 
@@ -32,24 +34,23 @@ const updateAllSignals = async () => {
 
       const signalValue = calculateSignal(rsi);
 
-      // ⏺️ Save the latest signal (overwrite if exists)
-      await Signal.findOneAndUpdate(
-        { asset: symbol },
-        {
-          action: signalValue,
-          confidence: 1, // Placeholder if you don't use this
-          generated_at: new Date(),
-        },
-        { upsert: true }
-      );
-
-      // 🆕 Save to historical collection
-      await SignalHistory.create({
+      // Save latest signal
+      const newSignal = new Signal({
         asset: symbol,
         rsi,
         signal: signalValue,
         generated_at: new Date(),
       });
+      await newSignal.save();
+
+      // Also save historical data
+      const historical = new SignalHistory({
+        asset: symbol,
+        rsi,
+        signal: signalValue,
+        generated_at: new Date(),
+      });
+      await historical.save();
 
       console.log(`✅ ${symbol}: RSI ${rsi} → ${signalValue}`);
     } catch (err) {
