@@ -1,6 +1,7 @@
+require('dotenv').config(); // MUST be at the top
+
 const express = require('express');
 const mongoose = require('mongoose');
-const dotenv = require('dotenv');
 const cors = require('cors');
 const cron = require('node-cron');
 const axios = require('axios');
@@ -10,8 +11,6 @@ const updateAllSignals = require('./utils/updateAllSignals');
 
 const Signal = require('./models/Signal');
 const SignalHistory = require('./models/SignalHistory');
-
-dotenv.config();
 
 const app = express();
 app.use(cors());
@@ -30,13 +29,13 @@ mongoose.connect(process.env.MONGO_URI, {
 .then(() => {
   console.log('✅ MongoDB connected');
 
-  // 🔁 Schedule signal updates every 3 minutes
+  // 🔁 Auto-update signals every 3 minutes
   cron.schedule('*/3 * * * *', async () => {
     console.log('⏱️ Running signal auto-update...');
     await updateAllSignals();
   });
 
-  // 🔁 Run once at server start
+  // Run once on startup
   updateAllSignals();
 })
 .catch(err => {
@@ -44,21 +43,21 @@ mongoose.connect(process.env.MONGO_URI, {
   process.exit(1);
 });
 
-// ✅ GET /api/assets — Return unique asset symbols
+// ✅ GET all unique asset names
 app.get('/api/assets', async (req, res) => {
   try {
     const assets = await Signal.distinct('asset');
     res.json(assets);
   } catch (err) {
-    console.error('❌ Failed to fetch assets:', err.message);
-    res.status(500).json({ error: 'Failed to fetch assets' });
+    console.error('❌ Fetching assets failed:', err.message);
+    res.status(500).json({ error: 'Internal error fetching assets' });
   }
 });
 
-// ✅ GET /api/signals/all — Latest signal per asset
+// ✅ GET latest signal per asset
 app.get('/api/signals/all', async (req, res) => {
   try {
-    const latestSignals = await Signal.aggregate([
+    const signals = await Signal.aggregate([
       { $sort: { generated_at: -1 } },
       {
         $group: {
@@ -67,64 +66,51 @@ app.get('/api/signals/all', async (req, res) => {
           rsi: { $first: '$rsi' },
           signal: { $first: '$signal' },
           generated_at: { $first: '$generated_at' },
-        },
+        }
       },
-      { $project: { _id: 0, asset: 1, rsi: 1, signal: 1, generated_at: 1 } },
+      { $project: { _id: 0, asset: 1, rsi: 1, signal: 1, generated_at: 1 } }
     ]);
 
-    res.json(latestSignals);
+    res.json(signals);
   } catch (err) {
     console.error('❌ Failed to fetch all signals:', err.message);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: 'Failed to fetch signals' });
   }
 });
 
-// ✅ GET /api/signals/:symbol — Latest signal for a symbol
+// ✅ GET latest signal for one symbol
 app.get('/api/signals/:symbol', async (req, res) => {
-  const symbol = req.params.symbol?.toUpperCase();
+  const symbol = req.params.symbol.toUpperCase();
   const apiKey = process.env.TWELVE_DATA_API_KEY;
 
-  if (!symbol) return res.status(400).json({ error: 'Missing symbol parameter' });
-  if (!apiKey) return res.status(500).json({ error: 'Missing API key on server' });
+  if (!symbol) return res.status(400).json({ error: 'Missing symbol' });
+  if (!apiKey) return res.status(500).json({ error: 'Missing API key' });
 
   try {
     let signal = await Signal.findOne({ asset: symbol }).sort({ generated_at: -1 });
 
     const now = Date.now();
-    const isStale = signal && now - new Date(signal.generated_at).getTime() > 5 * 60 * 1000; // 5 min
+    const isStale = signal && now - new Date(signal.generated_at).getTime() > 5 * 60 * 1000;
 
     if (!signal || isStale) {
-      const formattedSymbol = symbol.includes('USD') && !symbol.includes('/')
-        ? `${symbol.slice(0, 3)}/${symbol.slice(3)}`
-        : symbol;
-
-      const url = `https://api.twelvedata.com/rsi?symbol=${formattedSymbol}&interval=1min&time_period=14&apikey=${apiKey}`;
+      const formatted = symbol.includes('/') ? symbol : `${symbol}/USD`;
+      const url = `https://api.twelvedata.com/rsi?symbol=${formatted}&interval=1min&time_period=14&apikey=${apiKey}`;
       const response = await axios.get(url);
 
       const rsiStr = response.data?.values?.[0]?.rsi;
       const rsi = rsiStr ? parseFloat(rsiStr) : null;
 
       if (!rsi || isNaN(rsi)) {
-        console.warn(`⚠️ RSI not available for ${symbol}`);
+        console.warn(`⚠️ Invalid RSI for ${symbol}`);
         return res.status(404).json({ error: 'RSI data not available' });
       }
 
       const signalValue = calculateSignal(rsi);
-      signal = new Signal({
-        asset: symbol,
-        rsi,
-        signal: signalValue,
-        generated_at: new Date(),
-      });
+      signal = new Signal({ asset: symbol, rsi, signal: signalValue, generated_at: new Date() });
       await signal.save();
 
-      const historical = new SignalHistory({
-        asset: symbol,
-        rsi,
-        signal: signalValue,
-        generated_at: new Date(),
-      });
-      await historical.save();
+      const history = new SignalHistory({ asset: symbol, rsi, signal: signalValue, generated_at: new Date() });
+      await history.save();
 
       console.log(`✅ ${symbol}: RSI ${rsi} → ${signalValue}`);
     }
@@ -135,14 +121,13 @@ app.get('/api/signals/:symbol', async (req, res) => {
       signal: signal.signal,
       generated_at: signal.generated_at,
     });
-
   } catch (err) {
-    console.error(`❌ Error for ${symbol}:`, err.message);
-    res.status(500).json({ error: 'Internal server error' });
+    console.error(`❌ Error fetching ${symbol}:`, err.message);
+    res.status(500).json({ error: 'Error fetching signal' });
   }
 });
 
-// ✅ GET /api/signals/history/:symbol — RSI history for chart
+// ✅ GET RSI chart history from DB
 app.get('/api/signals/history/:symbol', async (req, res) => {
   try {
     const { symbol } = req.params;
@@ -151,12 +136,39 @@ app.get('/api/signals/history/:symbol', async (req, res) => {
     const rsiData = history.map(h => h.rsi);
     res.json({ rsi_history: rsiData });
   } catch (err) {
-    console.error(`❌ Failed to fetch RSI history:`, err.message);
-    res.status(500).json({ error: 'Failed to fetch RSI history' });
+    console.error('❌ Error fetching RSI history:', err.message);
+    res.status(500).json({ error: 'Error fetching RSI history' });
   }
 });
 
-// ✅ Start the server
+// ✅ GET real RSI chart values from Twelve Data
+app.get('/api/rsi-history/:symbol', async (req, res) => {
+  const { symbol } = req.params;
+  const apiKey = process.env.TWELVE_DATA_API_KEY;
+  const formatted = symbol.includes('/') ? symbol : `${symbol}/USD`;
+
+  if (!apiKey) return res.status(500).json({ error: 'Missing Twelve Data API key' });
+
+  try {
+    const url = `https://api.twelvedata.com/rsi?symbol=${formatted}&interval=5min&outputsize=10&apikey=${apiKey}`;
+    const response = await axios.get(url);
+    const values = response.data?.values;
+
+    if (!values || !Array.isArray(values)) {
+      return res.status(500).json({ error: 'Invalid RSI data' });
+    }
+
+    const labels = values.map(v => v.datetime.slice(11, 16)).reverse();
+    const rsiValues = values.map(v => parseFloat(v.rsi)).reverse();
+
+    res.json({ labels, values: rsiValues });
+  } catch (err) {
+    console.error(`❌ Failed RSI fetch for ${symbol}:`, err.message);
+    res.status(500).json({ error: 'Failed to fetch RSI chart data' });
+  }
+});
+
+// ✅ Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Backend live on port ${PORT}`);
