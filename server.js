@@ -93,7 +93,7 @@ app.get('/api/signals/:symbol', async (req, res) => {
     const isStale = signal && now - new Date(signal.generated_at).getTime() > 5 * 60 * 1000;
 
     if (!signal || isStale) {
-      const formatted = symbol.includes('/') ? symbol : `${symbol}/USD`;
+      const formatted = formatSymbol(symbol);
       const url = `https://api.twelvedata.com/rsi?symbol=${formatted}&interval=1min&time_period=14&apikey=${apiKey}`;
       const response = await axios.get(url);
 
@@ -145,16 +145,18 @@ app.get('/api/signals/history/:symbol', async (req, res) => {
 app.get('/api/rsi-history/:symbol', async (req, res) => {
   const { symbol } = req.params;
   const apiKey = process.env.TWELVE_DATA_API_KEY;
-  const formatted = symbol.includes('/') ? symbol : `${symbol}/USD`;
 
   if (!apiKey) return res.status(500).json({ error: 'Missing Twelve Data API key' });
+
+  const formatted = formatSymbol(symbol);
 
   try {
     const url = `https://api.twelvedata.com/rsi?symbol=${formatted}&interval=1min&outputsize=30&apikey=${apiKey}`;
     const response = await axios.get(url);
     const values = response.data?.values;
 
-    if (!Array.isArray(values) || values.length === 0) {
+    if (!values || !Array.isArray(values)) {
+      console.error('❌ Invalid RSI data from provider:', response.data);
       return res.status(500).json({ error: 'Invalid RSI data from provider' });
     }
 
@@ -167,6 +169,12 @@ app.get('/api/rsi-history/:symbol', async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch RSI chart data' });
   }
 });
+
+// ✅ Symbol formatter
+function formatSymbol(symbol) {
+  const upper = symbol.toUpperCase();
+  return upper.includes('/') ? upper : upper; // Keep AAPL, MSFT as-is; BTC/USD is already formatted
+}
 
 // ✅ Start server
 const PORT = process.env.PORT || 3000;
