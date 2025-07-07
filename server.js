@@ -29,13 +29,11 @@ mongoose.connect(process.env.MONGO_URI, {
 .then(() => {
   console.log('✅ MongoDB connected');
 
-  // 🔁 Auto-update signals every 3 minutes
   cron.schedule('*/3 * * * *', async () => {
     console.log('⏱️ Running signal auto-update...');
     await updateAllSignals();
   });
 
-  // Run once on startup
   updateAllSignals();
 })
 .catch(err => {
@@ -88,7 +86,6 @@ app.get('/api/signals/:symbol', async (req, res) => {
 
   try {
     let signal = await Signal.findOne({ asset: symbol }).sort({ generated_at: -1 });
-
     const now = Date.now();
     const isStale = signal && now - new Date(signal.generated_at).getTime() > 5 * 60 * 1000;
 
@@ -170,13 +167,46 @@ app.get('/api/rsi-history/:symbol', async (req, res) => {
   }
 });
 
-// ✅ Symbol formatter
+// ✅ GET real live prices for ticker strip
+app.get('/api/prices', async (req, res) => {
+  const apiKey = process.env.TWELVE_DATA_API_KEY;
+  const symbols = [
+    'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META',
+    'TSLA', 'NVDA', 'JPM', 'V', 'MA',
+    'BTC/USD', 'ETH/USD', 'SOL/USD'
+  ];
+  const formatted = symbols.map(sym => sym.includes('/') ? sym : `${sym}/USD`).join(',');
+
+  try {
+    const url = `https://api.twelvedata.com/price?symbol=${formatted}&apikey=${apiKey}`;
+    const response = await axios.get(url);
+    const data = response.data;
+
+    const prices = [];
+    for (const key in data) {
+      const entry = data[key];
+      if (entry && entry.price) {
+        prices.push({
+          symbol: entry.symbol.replace('/USD', ''),
+          price: parseFloat(entry.price).toFixed(2),
+        });
+      }
+    }
+
+    res.json(prices);
+  } catch (err) {
+    console.error('❌ Error fetching real prices:', err.message);
+    res.status(500).json({ error: 'Failed to fetch prices' });
+  }
+});
+
+// ✅ Format symbols helper
 function formatSymbol(symbol) {
   const upper = symbol.toUpperCase();
-  return upper.includes('/') ? upper : upper; // Keep AAPL, MSFT as-is; BTC/USD is already formatted
+  return upper.includes('/') ? upper : `${upper}/USD`;
 }
 
-// ✅ Start server
+// ✅ Start the server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Backend live on port ${PORT}`);
