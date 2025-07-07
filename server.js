@@ -141,34 +141,30 @@ app.get('/api/signals/history/:symbol', async (req, res) => {
   }
 });
 
-// ✅ GET live RSI values for charting (for frontend chart)
+// ✅ GET real RSI chart values from Twelve Data
 app.get('/api/rsi-history/:symbol', async (req, res) => {
   const { symbol } = req.params;
   const apiKey = process.env.TWELVE_DATA_API_KEY;
   const formatted = symbol.includes('/') ? symbol : `${symbol}/USD`;
 
-  if (!symbol || !apiKey) {
-    return res.status(400).json({ error: 'Missing symbol or API key' });
-  }
+  if (!apiKey) return res.status(500).json({ error: 'Missing Twelve Data API key' });
 
   try {
-    const url = `https://api.twelvedata.com/rsi?symbol=${formatted}&interval=5min&outputsize=25&apikey=${apiKey}`;
+    const url = `https://api.twelvedata.com/rsi?symbol=${formatted}&interval=1min&outputsize=30&apikey=${apiKey}`;
     const response = await axios.get(url);
-
     const values = response.data?.values;
-    if (!values || !Array.isArray(values) || values.length === 0) {
+
+    if (!Array.isArray(values) || values.length === 0) {
       return res.status(500).json({ error: 'Invalid RSI data from provider' });
     }
 
-    const rsiArray = values.map(v => parseFloat(v.rsi)).reverse(); // older to newer
+    const labels = values.map(v => v.datetime.slice(11, 16)).reverse();
+    const rsiValues = values.map(v => parseFloat(v.rsi)).reverse();
 
-    return res.json({
-      symbol: symbol.toUpperCase(),
-      values: rsiArray,
-    });
+    res.json({ labels, values: rsiValues });
   } catch (err) {
-    console.error('❌ RSI chart fetch failed:', err.message);
-    return res.status(500).json({ error: 'Failed to fetch RSI chart data' });
+    console.error(`❌ Failed RSI fetch for ${symbol}:`, err.message);
+    res.status(500).json({ error: 'Failed to fetch RSI chart data' });
   }
 });
 
