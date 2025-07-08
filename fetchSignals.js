@@ -14,9 +14,10 @@ const Signal = mongoose.model('Signal', new mongoose.Schema({
   rsi: Number,
   signal: String,
   generated_at: Date,
+  priceChange: Number, // ✅ Stored for ticker
 }));
 
-// Read supported assets from file
+// ✅ Load asset list from file
 function loadAssetSymbols() {
   const content = fs.readFileSync('final_supported_assets.txt', 'utf-8');
   return content
@@ -25,6 +26,7 @@ function loadAssetSymbols() {
     .filter(line => line.length > 0);
 }
 
+// ✅ Fetch RSI
 async function fetchRSI(symbol) {
   try {
     const encodedSymbol = encodeURIComponent(symbol);
@@ -44,6 +46,37 @@ async function fetchRSI(symbol) {
   }
 }
 
+// ✅ Fetch current price
+async function fetchCurrentPrice(symbol) {
+  try {
+    const encodedSymbol = encodeURIComponent(symbol);
+    const url = `https://api.twelvedata.com/price?symbol=${encodedSymbol}&apikey=${TWELVE_DATA_API_KEY}`;
+    const response = await axios.get(url);
+    const price = parseFloat(response.data?.price);
+    return isNaN(price) ? null : price;
+  } catch (err) {
+    console.error(`❌ Error fetching price for ${symbol}:`, err.message);
+    return null;
+  }
+}
+
+// ✅ Fetch previous close
+async function fetchPreviousClose(symbol) {
+  try {
+    const encodedSymbol = encodeURIComponent(symbol);
+    const url = `https://api.twelvedata.com/time_series?symbol=${encodedSymbol}&interval=1day&outputsize=2&apikey=${TWELVE_DATA_API_KEY}`;
+    const response = await axios.get(url);
+    const values = response.data?.values;
+    const close = values?.[1]?.close;
+    const previous = parseFloat(close);
+    return isNaN(previous) ? null : previous;
+  } catch (err) {
+    console.error(`❌ Error fetching previous close for ${symbol}:`, err.message);
+    return null;
+  }
+}
+
+// 🔄 Main updater
 async function updateSignals() {
   await mongoose.connect(MONGO_URI);
   console.log('✅ Connected to MongoDB');
@@ -54,10 +87,20 @@ async function updateSignals() {
 
   for (const symbol of assetSymbols) {
     console.log(`🔄 ${symbol}`);
-    const rsi = await fetchRSI(symbol);
-    if (rsi === null) continue;
+
+    const [rsi, currentPrice, previousPrice] = await Promise.all([
+      fetchRSI(symbol),
+      fetchCurrentPrice(symbol),
+      fetchPreviousClose(symbol),
+    ]);
+
+    if (rsi === null || currentPrice === null || previousPrice === null) {
+      console.warn(`⚠️ Skipped ${symbol} due to missing data`);
+      continue;
+    }
 
     const signal = calculateSignal(rsi);
+    const priceChange = ((currentPrice - previousPrice) / previousPrice) * 100;
 
     await Signal.findOneAndUpdate(
       { asset: symbol.toUpperCase() },
@@ -66,11 +109,12 @@ async function updateSignals() {
         rsi,
         signal,
         generated_at: new Date(),
+        priceChange: parseFloat(priceChange.toFixed(2)),
       },
       { upsert: true }
     );
 
-    console.log(`✅ ${symbol}: RSI=${rsi}, Signal=${signal}`);
+    console.log(`✅ ${symbol} → RSI: ${rsi}, Δ: ${priceChange.toFixed(2)}%`);
   }
 
   await mongoose.disconnect();
