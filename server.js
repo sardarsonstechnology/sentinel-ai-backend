@@ -54,7 +54,7 @@ app.get('/api/assets', async (req, res) => {
   }
 });
 
-// ✅ GET latest signal per asset
+// ✅ GET latest signal per asset (returns priceChange now)
 app.get('/api/signals/all', async (req, res) => {
   try {
     const signals = await Signal.aggregate([
@@ -66,9 +66,19 @@ app.get('/api/signals/all', async (req, res) => {
           rsi: { $first: '$rsi' },
           signal: { $first: '$signal' },
           generated_at: { $first: '$generated_at' },
+          priceChange: { $first: '$priceChange' } // ✅ include this
         }
       },
-      { $project: { _id: 0, asset: 1, rsi: 1, signal: 1, generated_at: 1 } }
+      {
+        $project: {
+          _id: 0,
+          asset: 1,
+          rsi: 1,
+          signal: 1,
+          generated_at: 1,
+          priceChange: 1 // ✅ expose it in response
+        }
+      }
     ]);
 
     res.json(signals);
@@ -169,11 +179,11 @@ app.get('/api/rsi-history/:symbol', async (req, res) => {
   }
 });
 
-// ✅ Symbol formatter (permanent fix)
+// ✅ Symbol formatter
 function formatSymbol(symbol) {
   const upper = symbol.toUpperCase();
   const cryptoSymbols = ['BTC/USD', 'ETH/USD'];
-  return cryptoSymbols.includes(upper) ? upper : upper; // Stocks = AAPL, Crypto = BTC/USD
+  return cryptoSymbols.includes(upper) ? upper : upper;
 }
 
 // ✅ Start server
